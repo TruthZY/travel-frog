@@ -1,0 +1,24 @@
+# 构建产物
+firmware/build/
+firmware/.cache/
+sim/build/
+
+# 由 sdkconfig.defaults 重新生成，不入库（新克隆时 defaults 会干净地套用）
+firmware/sdkconfig
+
+# 组件由 main/idf_component.yml + dependencies.lock 自动拉取
+firmware/managed_components/
+
+# 字体生成工具的依赖：cd tools && npm install
+tools/node_modules/
+
+# 模拟器运行期存档
+travel_frog_save.bin
+travel_frog_save.bin.bak
+
+# 截图脚本的输出
+tools/shots/
+
+__pycache__/
+*.pyc
+.vscode/
