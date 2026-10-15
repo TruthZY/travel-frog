@@ -65,6 +65,10 @@ tf_wake_t tf_port_wake_cause(void);
    reboot); where the touch pin cannot be trusted the firmware returns like the simulator
    does, and the caller is then expected to keep the veil up until the next tap. */
 void      tf_port_sleep(void);
+/* Put back the hardware tf_port_sleep() turned off. Only the fallback path that returns
+   instead of rebooting needs this — a deep-sleep wake runs app_main from the top, which
+   lights the panel itself. Targets with nothing to restore implement it as a no-op. */
+void      tf_port_wake_restore(void);
 /* Pulse the light to catch the eye from across the room. There is no separately
    wired status LED on this board — LED1/LED2 hang off the charger — so the panel
    backlight is the only thing that can blink. */

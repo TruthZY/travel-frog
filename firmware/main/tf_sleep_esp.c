@@ -61,6 +61,8 @@ static bool s_noted;
 
 extern bool tf_rtc_available(void);
 extern pcf85063a_dev_t *tf_rtc_handle(void);
+extern void tf_snd_quiesce(void);
+extern void tf_snd_resume(void);
 
 static void rtc_clear_alarm(void)
 {
@@ -278,6 +280,9 @@ static void to_sleep(void)
     pwr_set(K_SLEPT, (uint32_t)(tf_port_now_ms() / 1000));
     /* The veil already covers the UI; killing the lamp is what the player actually sees. */
     bsp_display_backlight_off();
+    /* A deep sleep takes the I2S clocks down with it, but the tier-1 fallback below does
+       not, so drop the codec here either way — everything left clocking is pure heat. */
+    tf_snd_quiesce();
 
     tier_count_down();
 
@@ -288,8 +293,17 @@ static void to_sleep(void)
         return;
     }
     if (pwr_get(K_TIER, 0) == 0) degrade_tier("GPIO cannot carry an EXT1 wake");
-    /* Tier 1: nothing to do. on_tick stays parked behind the veil and the indev keeps
+    /* Tier 1: nothing more to do. on_tick stays parked behind the veil and the indev keeps
        reading over I2C, so wake_cb fires on the next tap. */
+}
+
+/* Only the tier-1 fallback reaches this: a deep-sleep wake is a reboot, and app_main lights
+   the panel from the top. Without it the first tap after a tier-1 sleep brings the whole UI
+   back onto a panel nobody can see, and the only cure is the power key. */
+void tf_port_wake_restore(void)
+{
+    bsp_display_backlight_on();
+    tf_snd_resume();
 }
 
 void tf_port_sleep(void)

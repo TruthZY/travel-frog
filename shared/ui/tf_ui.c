@@ -432,10 +432,11 @@ static void wake_cb(lv_event_t *e)
 {
     (void)e;
     if (!s_sleep) return;
-    const bool was_veiled = (s_sleep == 2);   /* a tap during the fade never gated anything */
+    const bool was_veiled = (s_sleep == 2);   /* a tap during the fade never slept for real */
     s_sleep = 0;
     lv_anim_delete(U.black, set_bg_opa);   /* a tap during the fade cancels the sleep */
     if (was_veiled) {
+        tf_port_wake_restore();   /* lamp and codec first, so the frame lands on a lit panel */
         drawing_gate(false);
         idle_anims_start();
         lv_obj_invalidate(lv_screen_active());

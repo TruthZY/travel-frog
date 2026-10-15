@@ -49,6 +49,9 @@ bool tf_port_store(const tf_save_t *s)
 
 void tf_port_sleep(void) { }
 
+/* Nothing here is ever powered down: the window has no backlight and SDL owns the audio. */
+void tf_port_wake_restore(void) { }
+
 bool tf_port_sleep_until(int64_t at_ms)
 {
     (void)at_ms;
