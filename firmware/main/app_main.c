@@ -7,6 +7,7 @@
 #include "tf_ui.h"
 
 extern void tf_sleep_note_wake(void);
+extern void tf_sleep_announce_arrival(const tf_save_t *game);
 
 static tf_save_t s_save;
 
@@ -27,6 +28,14 @@ void app_main(void)
     /* Has to run while the reset cause is still readable, and it decides what sleep mode
        the next blank will use. */
     tf_sleep_note_wake();
+
+    if (tf_port_load(&s_save) && tf_port_wake_cause() == TF_WAKE_ALARM) {
+        /* Nobody tapped. Flash and drop off again — but only while the frog really is
+           still due, so a spurious ring cannot trap us in a blink loop. */
+        if (tf_core_state(&s_save) == TF_STATE_OUT &&
+            tf_core_trip_remaining_ms(&s_save, tf_port_now_ms()) > 0)
+            tf_sleep_announce_arrival(&s_save);
+    }
 
     lv_display_t *disp = bsp_display_start();
     ESP_ERROR_CHECK(disp == NULL ? ESP_FAIL : ESP_OK);

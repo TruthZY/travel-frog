@@ -28,6 +28,9 @@
 #define COL_GREY_P  0x6E6152
 #define COL_FROG    0x66C04F
 #define COL_CLOVER  0x2E9B5C
+#define COL_BATT_HI  0x3EA03A            /* three bars: enough charge */
+#define COL_BATT_MID 0xE8A800            /* two bars, or the bolt while charging */
+#define COL_BATT_LO  0xD6453C            /* one bar: find a cable */
 
 #define UI_D 360                    /* round panel diameter */
 #define BAR_W 176                   /* widest pill that still fits the circle at y=25 */
@@ -35,8 +38,7 @@
 
 /* Idle time before the panel goes dark. Being away is the long wait of this game, so
    it blanks sooner than the garden view the player might still be looking at. */
-#define IDLE_MS_HOME 60000
-#define IDLE_MS_OUT  20000
+#define IDLE_MS 20000
 #define SLEEP_FADE_MS 400
 
 enum { DOCK_SHOP = 0, DOCK_GO, DOCK_CARD, DOCK_SPD, DOCK_NUM };
@@ -58,6 +60,9 @@ typedef struct {
     lv_obj_t *frog_img[2];          /* [0] home, [1] angry (NULL when no assets) */
     lv_obj_t *clover_lbl;
     lv_obj_t *trip_lbl;
+    lv_obj_t *batt_card;
+    lv_obj_t *batt_bolt;
+    lv_obj_t *batt_bar[3];
     lv_obj_t *dock_lbl[DOCK_NUM];
     lv_obj_t *clover_btn[TF_NUM_CLOVER];
     bool clover_vis[TF_NUM_CLOVER];
@@ -73,6 +78,7 @@ typedef struct {
 static ui_t U;
 static int s_sleep;                     /* 0 awake, 1 fading out, 2 veiled */
 static int64_t s_last_act_ms;
+static uint32_t s_batt_sig = ~0u;       /* last painted battery look, ~0 = never painted */
 #ifdef TF_DEBUG_IDLE
 static int64_t s_boot_ms;               /* temporary M3b rig: watch the countdown on UART */
 #endif
@@ -352,6 +358,12 @@ static void sleep_fade_done(lv_anim_t *a)
     (void)a;
     s_sleep = 2;
     tf_port_store(U.save);   /* a deep-sleep wake is a reboot: whatever is unsaved is lost */
+    /* A trip that will end while the panel is dark gets an alarm, so the board can flash
+       the light for a player who is nowhere near it. The wake that ring never draws UI. */
+    const int64_t due = tf_core_trip_remaining_ms(U.save, tf_port_now_ms());
+    if (tf_core_state(U.save) == TF_STATE_OUT && due > 0 &&
+        tf_port_sleep_until(tf_port_wall_ms() + due))
+        return;
     tf_port_sleep();
     /* Only the simulator and the polled fallback come back here; the veil stays up and
        wake_cb handles the tap. */
@@ -417,20 +429,19 @@ static void on_tick(lv_timer_t *t)
         tf_port_store(U.save);
     refresh();
 
-    const int64_t idle = tf_core_state(U.save) == TF_STATE_OUT ? IDLE_MS_OUT : IDLE_MS_HOME;
 #ifdef TF_DEBUG_IDLE
     {
         static int last_s = -1;
         const int s = (int)((now - s_boot_ms) / 1000);
         if (s != last_s) {
             last_s = s;
-            printf("idle %ds / %llds -> %s\n", s, (long long)(idle / 1000),
+            printf("idle %ds / %llds -> %s\n", s, (long long)(IDLE_MS / 1000),
                    s_sleep ? "VEILED" : "awake");
             fflush(stdout);
         }
     }
 #endif
-    if (now - s_last_act_ms >= idle) sleep_now();
+    if (now - s_last_act_ms >= IDLE_MS) sleep_now();
 }
 
 /* ---------- layout ---------- */
@@ -527,6 +538,21 @@ void tf_ui_create(lv_obj_t *screen, tf_save_t *save)
     U.clover_lbl = mk_label(bar, "三叶草 0", COL_INK);
     U.trip_lbl = mk_label(bar, "在家", COL_INK);
 
+    /* battery: a second, smaller pill centred under the status bar. At y=59..77 the round
+       panel is ~295 px wide, so this ~60 px pill has plenty of clearance. */
+    U.batt_card = mk_card(scr, LV_SIZE_CONTENT, 18, LV_RADIUS_CIRCLE);
+    lv_obj_align(U.batt_card, LV_ALIGN_TOP_MID, 0, 59);
+    lv_obj_set_style_bg_opa(U.batt_card, LV_OPA_90, 0);
+    lv_obj_set_style_pad_hor(U.batt_card, 5, 0);
+    lv_obj_set_flex_flow(U.batt_card, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(U.batt_card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(U.batt_card, 3, 0);
+    U.batt_bolt = mk_label(U.batt_card, LV_SYMBOL_CHARGE, COL_BATT_MID);
+    lv_obj_set_style_text_font(U.batt_bolt, &lv_font_montserrat_14, 0);
+    for (int i = 0; i < 3; i++)
+        U.batt_bar[i] = mk_base(U.batt_card, 9, 12, COL_GREY, 2);
+    lv_obj_add_flag(U.batt_card, LV_OBJ_FLAG_HIDDEN);
+
     /* dock */
     build_dock_btn(scr, DOCK_SHOP, "商店", bag_cb);
     build_dock_btn(scr, DOCK_GO, "出发", trip_btn_cb);
@@ -598,12 +624,40 @@ void tf_ui_create(lv_obj_t *screen, tf_save_t *save)
     refresh();
 }
 
+/* Three bars green, two yellow, one red — the count and the colour both carry the level,
+   so the pill reads at a glance from across a room. The bolt only appears on external
+   power: yellow while charging, green once the gauge reports full. */
+static void refresh_battery(void)
+{
+    tf_batt_t b = { .percent = 0, .charging = false, .full = false };
+    const bool present = tf_port_battery(&b);
+    const int bars = !present ? 0 : b.percent >= 60 ? 3 : b.percent >= 25 ? 2 : 1;
+    const uint32_t sig = ((uint32_t)present << 3) | ((uint32_t)bars << 8) |
+                         ((uint32_t)b.charging << 1) | ((uint32_t)b.full << 2);
+    if (sig == s_batt_sig) return;          /* the gauge only moves every couple of seconds */
+    s_batt_sig = sig;
+
+    set_hidden(U.batt_card, !present);      /* no gauge is better answered with silence */
+    if (!present) return;
+
+    const uint32_t band = bars == 3 ? COL_BATT_HI : bars == 2 ? COL_BATT_MID : COL_BATT_LO;
+    for (int i = 0; i < 3; i++) {
+        const bool lit = i < bars;
+        lv_obj_set_style_bg_color(U.batt_bar[i], lv_color_hex(lit ? band : COL_GREY), 0);
+        lv_obj_set_style_bg_opa(U.batt_bar[i], lit ? LV_OPA_COVER : LV_OPA_20, 0);
+    }
+    set_hidden(U.batt_bolt, !b.charging);
+    if (b.charging)
+        lv_obj_set_style_text_color(U.batt_bolt, lv_color_hex(b.full ? COL_BATT_HI : COL_BATT_MID), 0);
+}
+
 static void refresh(void)
 {
     int64_t now = tf_port_now_ms();
     tf_state_t st = tf_core_state(U.save);
     char buf[64];
 
+    refresh_battery();
     snprintf(buf, sizeof buf, "三叶草 %d", (int)U.save->clovers);
     lv_label_set_text(U.clover_lbl, buf);
 

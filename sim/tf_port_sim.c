@@ -49,6 +49,12 @@ bool tf_port_store(const tf_save_t *s)
 
 void tf_port_sleep(void) { }
 
+bool tf_port_sleep_until(int64_t at_ms)
+{
+    (void)at_ms;
+    return false;   /* a PC has no alarm hardware; the caller sleeps the plain way */
+}
+
 tf_wake_t tf_port_wake_cause(void)
 {
     /* Every simulator start is a cold boot; the veil's own tap handling covers wakes. */

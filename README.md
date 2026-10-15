@@ -35,6 +35,12 @@ powershell -File tools/sim_shot.ps1 -Out shot.png
 powershell -File tools/sim_shot.ps1 -X 84 -Y 272 -Out shot.png
 ```
 
+- 窗口一片漆黑不是代码问题：SDL 默认走 direct3d 呈现，某些桌面会话下 PrintWindow 和抓屏都只能拿到黑帧。
+  启动前设 `SDL_RENDER_DRIVER=software` 强制软件渲染即可。
+- 存档是二进制，`tools/craft_save.py` 可以造一个合法帧来直接摆出任意状态：
+  `python tools/craft_save.py sim/build/Debug/travel_frog_save.bin state=1 clovers=100 trip_end_ms=600000`
+  （注意运行目录是 `sim/build/Debug/`，不是仓库根）。
+
 ## 固件
 
 **中文渲染必须单线程（`CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1`）**，这是实机「文字不停变乱码」的真正根因：
@@ -125,7 +131,7 @@ Q4/Q5 锁存 → DC-DC 通断，整条链路没有 ESP32 的 GPIO。也就是说
 行程和三叶草田继续按 RTC 走，下一次界面亮起来时由 `tf_core_tick()` 一次结算完。
 没有「定时醒来结算」这种设计。
 
-- `shared/ui/tf_ui.c`：闲置看门狗。外出中 **20s**、在家 **60s** 无触摸 → 关掉弹窗和气泡，
+- `shared/ui/tf_ui.c`：闲置看门狗。**任何状态下 20s** 无触摸 → 关掉弹窗和气泡，
   用 400ms 把黑幕 `U.black` 从透明淡到全黑，落盘一次，再调 `tf_port_sleep()`。
   淡出过程中再点一下 = 取消入睡（`lv_anim_delete`）。黑幕期间 `on_tick` 直接 return，不再画。
 - 唤醒：黑幕自己吃触摸，`wake_cb` 掀开黑幕 → 下一次 tick 结算行程。
@@ -139,6 +145,40 @@ Q4/Q5 锁存 → DC-DC 通断，整条链路没有 ESP32 的 GPIO。也就是说
   - 判据：睡下后立刻被 EXT1 叫醒（≤2s）连续 3 次，或刚睡下不到 5 分钟就被 PWR/插电打断
     连续 3 次 → 认为 INT 线不可靠，永久降到 tier 1。
   - 关机键是硬件锁存，深睡时 esp_timer 停摆但 **RTC 继续走**，唤醒后按绝对时间戳结算。
+
+## 到点闪灯（M3c）
+
+黑幕期间的脉冲玩家看不见，所以行程截止改由 **RTC 闹钟**叫醒主板：
+
+- 入睡前 `sleep_fade_done()` 算出还剩多久，调 `tf_port_sleep_until(wall_now + due)`；
+  固件把闹钟写到 PCF85063A（CTRL_2.AIE，时/分/秒，日与星期屏蔽），并把 GPIO4+GPIO6
+  一起放进同一片 EXT1 掩码——触摸和闹钟共用一条深睡唤醒路径。
+- 醒来后 `tf_sleep_note_wake()` 用 I2C 读 CTRL_2.AF 区分「谁叫我」：AF 置位是闹钟，
+  否则是手指。闹钟唤醒在 `app_main()` 里提前分流：**不点屏、不建 UI、不结算**，
+  只闪 6 下背光再睡回去（`tf_sleep_announce_arrival()`），行程状态仍由玩家点击那次结算。
+- 只有 tier 0 且 RTC 可用且闹钟写成功才走这条路，否则退回普通 `tf_port_sleep()`；
+  模拟器 `tf_port_sleep_until()` 直接返回 false，闪灯机会留给「玩家在场」那条路径。
+- 闪灯后不重新武装闹钟，否则明天同一时刻还会再闪一次。
+
+## 电量（M7）
+
+- 契约在 `shared/core/tf_port.h`：`bool tf_port_battery(tf_batt_t *out)`，
+  返回 false 表示**没有电量计**，UI 就什么都不画——比一个看起来很真的 0% 好。
+- 固件 `firmware/main/tf_batt_esp.c`：BQ27220 走乐鑫旧版 `i2c_bus`（`bsp_i2c_bus_get_handle()`），
+  `bq27220_create()` 要 unseal 并写 CEDV profile，可能耗时数秒，**不能放在 LVGL 线程里**，
+  所以丢给一个 prio 1 的后台任务，每 2s 采一次，发布成一个 32 位快照（Xtensa 上单次对齐写即原子）。
+- 驱动里每个 getter 都把 `esp_err_t` 丢掉（`bq27220.c:71` 的 `(void)`），哑掉的电量计读出来像 0%，
+  所以「有没有这块芯片」只能由 `bq27220_create()` 判定（它会校验 device number 0x0220）；
+  失败后每 30s 重试一次。
+- 百分比用 `剩余容量 / 满充容量`，不读 StateOfCharge 寄存器——那一族芯片的 SOC 是 %×2，
+  驱动原样返回，除以 2 还是不变都没法在桌面上验证。FCC 还没稳定时（读到 0）保留上一次快照。
+- 充电中 = 电流为正；充满 = 充电中且 `battery_status.FC`。
+- UI 在状态栏正下方居中（`y=59`，圆屏此处弦长约 295px，控件 ~60px）：
+  三格绿（≥60%）/ 两格黄（≥25%）/ 一格红（<25%），格数与颜色同时表达档位；
+  闪电（`LV_SYMBOL_CHARGE` + Montserrat 14，中文字体里没有这个码位）只在通电时出现，充电黄、充满绿。
+  250ms 的 tick 用一个签名比对挡住重绘，电量两秒才动一次。
+- 模拟器 `sim/tf_batt_sim.c` 读环境变量 `TF_BATT`，五种状态各截一图：
+  `87` 三绿、`40` 两黄、`10` 一红、`40C` 充电、`100F` 充满、不设或 `none` 无电量计。
 
 ## 玩法（M1 骨架范围）
 
@@ -175,10 +215,11 @@ M1 双构建骨架 + 逻辑（已完成）
 M2a 模拟器像素素材接入（已完成：庭院背景 / 青蛙在家与生气 / 三叶草 / dock 图标）
 M2b 中文与 UI 美化（已完成：字体子集、圆屏安全区、气泡/弹窗/动画）
 M2c 固件素材打包（已完成：预解码 C 数组，实机烧录验证）
-M3 RTC 离线行程结算（已完成：RTC 时钟基准 + 断电安全存档 + 熄屏休眠）
+M3 RTC 离线行程结算（已完成：RTC 时钟基准 + 断电安全存档 + 熄屏休眠 + 闹钟到点闪灯）
 M4 明信片图片奖励
 M5 音效（已完成：ES8311 直推 PCM + SPIFFS 原创音效；剩余：背景音乐需要混音）
 M6 WiFi（NTP/云存档）与 AI 语音（esp-sr 唤醒词）
+M7 电量（已完成：BQ27220 后台采样 + 状态栏下方三格电量，实机待验证）
 
 ## 音效
 

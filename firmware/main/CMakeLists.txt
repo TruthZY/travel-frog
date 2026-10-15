@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         app_main.c
         tf_port_esp.c
+        tf_batt_esp.c
         tf_sleep_esp.c
         tf_snd_esp.c
         tf_assets_gen.c
@@ -20,6 +21,8 @@ idf_component_register(
         driver
         waveshare__esp32_s3_touch_lcd_1_85B
         waveshare__pcf85063a
+        espressif__bq27220
+        espressif__i2c_bus
         bsp_extra
 )
 

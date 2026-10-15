@@ -30,6 +30,7 @@ set_property(TARGET lvgl PROPERTY INTERFACE_COMPILE_DEFINITIONS ${lvgl_if})
 add_executable(travel_frog_sim
     main.c
     tf_port_sim.c
+    tf_batt_sim.c
     tf_assets_sim.c
     tf_snd_sdl.c
     sim_clock.c

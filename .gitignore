@@ -15,9 +15,11 @@ tools/node_modules/
 # 模拟器运行期存档（两个轮换槽位）
 travel_frog_save.bin
 travel_frog_save.bak
+*.orig
 
 # 截图脚本的输出
 tools/shots/
+tools/*.png
 
 __pycache__/
 *.pyc

@@ -28,6 +28,8 @@ static bool s_rtc_ready;
 static int64_t s_base_ms;      /* game clock when the clock was anchored */
 static int64_t s_base_us;
 
+static void clock_init(void);
+
 /* ---------- civil calendar <-> epoch (Howard Hinnant's algorithms) ---------- */
 
 static int64_t days_from_civil(int y, unsigned m, unsigned d)
@@ -65,6 +67,20 @@ static int64_t rtc_read_ms(void)
         return -1;                                    /* backup cap died, or never set */
     return days_from_civil(t.year, t.month, t.day) * RTC_DAY_MS
            + (t.hour * 3600 + t.min * 60 + t.sec) * 1000LL;
+}
+
+/* The sleep driver needs the handle to arm the RTC alarm, and clock_init() is the only
+   place that opens it. */
+bool tf_rtc_available(void)
+{
+    clock_init();
+    return s_rtc_ready;
+}
+
+pcf85063a_dev_t *tf_rtc_handle(void)
+{
+    clock_init();
+    return s_rtc_ready ? &s_rtc : NULL;
 }
 
 static void rtc_write_ms(int64_t ms)
@@ -111,6 +127,22 @@ int64_t tf_port_now_ms(void)
 {
     clock_init();
     return s_base_ms + (esp_timer_get_time() - s_base_us) / 1000;
+}
+
+int64_t tf_port_wall_ms(void)
+{
+    clock_init();
+    return rtc_read_ms();
+}
+
+void tf_port_wall_set(int64_t ms)
+{
+    clock_init();
+    rtc_write_ms(ms);
+    const int64_t now = tf_port_now_ms();
+    s_base_ms += ms - now;
+    s_base_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "wall clock set to %lld ms", (long long)ms);
 }
 
 void tf_port_clock_floor(int64_t ms)
