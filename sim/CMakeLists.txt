@@ -6,17 +6,30 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 include(FetchContent)
 
-FetchContent_Declare(lvgl
-    GIT_REPOSITORY https://github.com/lvgl/lvgl.git
-    GIT_TAG        v9.3.0
-    GIT_SHALLOW    TRUE
-)
-FetchContent_Declare(sdl2
-    URL https://github.com/libsdl-org/SDL/releases/download/release-2.32.8/SDL2-devel-2.32.8-VC.zip
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-)
-set(LV_CONF_BUILD_DISABLE_DEMOS ON CACHE BOOL "")
-set(LV_CONF_BUILD_DISABLE_EXAMPLES ON CACHE BOOL "")
+# Offline builds: unpack the two release archives under build/_deps_manual/ and they are
+# used instead of the network. FetchContent resolves SOURCE_DIR at configure time, so the
+# choice has to be made here rather than delegated to it.
+set(TF_DEPS_MANUAL ${CMAKE_CURRENT_SOURCE_DIR}/build/_deps_manual)
+if(EXISTS ${TF_DEPS_MANUAL}/lvgl-release-v9.3 AND EXISTS ${TF_DEPS_MANUAL}/SDL2-2.32.8)
+    FetchContent_Declare(lvgl SOURCE_DIR ${TF_DEPS_MANUAL}/lvgl-release-v9.3)
+    FetchContent_Declare(sdl2 SOURCE_DIR ${TF_DEPS_MANUAL}/SDL2-2.32.8)
+else()
+    FetchContent_Declare(lvgl
+        GIT_REPOSITORY https://github.com/lvgl/lvgl.git
+        GIT_TAG        v9.3.0
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_Declare(sdl2
+        URL https://github.com/libsdl-org/SDL/releases/download/release-2.32.8/SDL2-devel-2.32.8-VC.zip
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+endif()
+
+# v9.3 renamed these from LV_CONF_BUILD_DISABLE_{DEMOS,EXAMPLES}; under the old names both
+# stay ON, which wastes a lot of compile time and fails outright on lv_example_scroll_8.c
+# (undeclared 'total').
+set(CONFIG_LV_BUILD_DEMOS OFF CACHE BOOL "")
+set(CONFIG_LV_BUILD_EXAMPLES OFF CACHE BOOL "")
 set(LV_CONF_PATH ${CMAKE_CURRENT_SOURCE_DIR}/lv_conf.h CACHE STRING "" FORCE)
 FetchContent_MakeAvailable(lvgl sdl2)
 
