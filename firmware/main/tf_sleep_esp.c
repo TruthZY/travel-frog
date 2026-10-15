@@ -1,13 +1,13 @@
-/* M3b/M3c sleep. The board is a pet that sits on a desk, so "asleep" has to mean the panel
+/* M3b sleep. The board is a pet that sits on a desk, so "asleep" has to mean the panel
    is dark and the draw is gone, while the trip keeps running: every deadline in the save is
    an absolute timestamp on the PCF85063A, so nothing is computed while sleeping and nothing
    is settled on a timer. The next tap reboots the chip and tf_core_tick() brings the frog
    home.
 
-   A tap is the only thing that can *show* the result, which is no use to a player who is in
-   another room, so the alarm half of this file wakes the chip at the trip's end, plays the
-   home call and goes straight back to sleep without ever drawing or settling anything —
-   a blink needs someone looking at the desk, a sound reaches down a corridor.
+   There is deliberately no "the frog is home" reminder. A tap is the only thing that can
+   *show* the result, and waking the chip to pulse the backlight only reaches someone who is
+   already looking at the desk — which is not worth an alarm path plus its own wake case.
+   The trip settles the next time the player touches the glass.
 
    From the Rev1.1 schematic: the CST816S INT is GPIO4 (BSP_LCD_TOUCH_INT) and the
    PCF85063A INT is GPIO6, both through 0R links. GPIO0-21 are RTC IOs on the S3, so both can
@@ -19,7 +19,7 @@
    over I2C. Tier 0 costs the battery nothing and tier 1 costs nothing but battery, so the
    degradation is safe in both directions — and it has to be reversible, because tier 1
    can never gather the evidence that would vindicate tier 0. It re-probes on a countdown
-   instead of latching; see degrade_tier(). The alarm reminder only exists in tier 0. */
+   instead of latching; see degrade_tier(). */
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -93,14 +93,6 @@ static void rtc_quiesce(void)
     pcf85063a_write_register(rtc, mask, sizeof mask);
 }
 
-static bool rtc_alarm_pending(void)
-{
-    pcf85063a_dev_t *rtc = tf_rtc_handle();
-    uint8_t v = 0;
-    if (!rtc || pcf85063a_read_register(rtc, CTRL2, &v, 1) != ESP_OK) return false;
-    return (v & AF) != 0;
-}
-
 /* ---------- NVS tier bookkeeping ---------- */
 
 static uint32_t pwr_get(const char *key, uint32_t missing)
@@ -123,9 +115,10 @@ static void pwr_set(const char *key, uint32_t v)
 
 /* Degrading is a hypothesis about the INT lines, not a verdict, and it cannot be confirmed
    from inside tier 1: the chip never deep sleeps there, so it never gets the EXT1 wake that
-   would prove tier 0 works. Meanwhile a wet finger, an ESD kick on the 0R link or a single
-   failed I2C read in rtc_alarm_pending() all look exactly like a broken INT — so a degraded
-   tier counts sleeps down and then tries deep sleep again rather than staying hot forever. */
+   would prove tier 0 works. Meanwhile a wet finger or an ESD kick on the 0R link looks
+   exactly like a broken INT — and so did the stale RTC alarm flag that held GPIO6 low, which
+   is what pinned this board to tier 1 to begin with. So a degraded tier counts sleeps down
+   and then tries deep sleep again rather than staying hot forever. */
 static void degrade_tier(const char *why)
 {
     pwr_set(K_TIER, 1);
@@ -162,15 +155,12 @@ void tf_sleep_note_wake(void)
     const int64_t delta = slept ? tf_port_now_ms() / 1000 - (int64_t)slept : -1;
     s_noted = true;
 
-    /* The RTC alarm pin is open-drain and holds the line until AF is cleared, so an EXT1
-       wake can be told apart from a finger by reading the flag over I2C. */
-    const bool rang = src == ESP_SLEEP_WAKEUP_EXT1 && rtc_alarm_pending();
-
     pwr_set(K_SLEPT, 0);
 
-    if (rang) {
-        rtc_quiesce();
-    } else if (src == ESP_SLEEP_WAKEUP_EXT1) {
+    /* An EXT1 wake can only be a finger now. rtc_quiesce() runs before every sleep and
+       masks all five alarm fields plus stops the timer, so the RTC has nothing left that
+       could assert the INT line it shares with the touch controller. */
+    if (src == ESP_SLEEP_WAKEUP_EXT1) {
         /* The line idles low or chatters: ANY_LOW would reboot us forever. */
         const uint32_t fast = (delta >= 0 && delta <= FAST_WAKE_S) ? pwr_get(K_FAST, 0) + 1 : 0;
         pwr_set(K_FAST, fast);
@@ -186,9 +176,9 @@ void tf_sleep_note_wake(void)
         pwr_set(K_FAST, fast);
         if (fast >= GIVE_UP) degrade_tier("short sleeps ended by a power cycle: INT cannot wake");
     }
-    ESP_LOGI(TAG, "woke by %s, ring=%d tier=%u",
+    ESP_LOGI(TAG, "woke by %s, tier=%u",
              src == ESP_SLEEP_WAKEUP_EXT1 ? "EXT1" : "power-on",
-             (int)rang, (unsigned)pwr_get(K_TIER, 0));
+             (unsigned)pwr_get(K_TIER, 0));
 }
 
 /* ---------- light show ---------- */
