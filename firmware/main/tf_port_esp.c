@@ -4,6 +4,7 @@
 #include "tf_persist.h"
 #include "nvs.h"
 #include "esp_timer.h"
+#include "esp_random.h"
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
 #include "pcf85063a.h"
@@ -157,6 +158,11 @@ void tf_port_clock_floor(int64_t ms)
 
 void tf_port_speed_cycle(void) { /* real time on device */ }
 int  tf_port_speed(void) { return 1; }
+
+/* The S3's RNG is a true hardware generator, so it needs no entropy source and no RF to be
+   up — worth having, because a deep-sleep wake is a cold boot and would otherwise restart
+   the same reward sequence on every single trip. */
+uint32_t tf_port_random_seed(void) { return esp_random(); }
 
 /* ---------- storage ---------- */
 

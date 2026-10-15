@@ -15,6 +15,10 @@ void    tf_port_clock_floor(int64_t ms);
 void    tf_port_speed_cycle(void);
 int     tf_port_speed(void);
 
+/* Entropy for tf_core_seed(). Firmware: the S3's hardware RNG. Simulator: there is none,
+   so it mixes what a PC has. Only needs to differ between runs, not be unpredictable. */
+uint32_t tf_port_random_seed(void);
+
 /* Sound effects. Names live in tf_sfx.c so both targets look for the same files;
    the audio data is 22050 Hz / mono / 16-bit, which is what the board's I2S is
    fixed to (BSP_I2S_DUPLEX_MONO_CFG(22050)) and what SDL plays with no conversion. */

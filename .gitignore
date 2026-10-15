@@ -24,3 +24,8 @@ tools/*.png
 __pycache__/
 *.pyc
 .vscode/
+
+# 宿主机单元测试的产物（tests/test_core.c，见文件头部的编译命令）
+tests/*.exe
+tests/*.obj
+tests/*.pdb

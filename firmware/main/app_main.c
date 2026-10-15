@@ -29,6 +29,10 @@ void app_main(void)
        the next blank will use. */
     tf_sleep_note_wake();
 
+    /* A deep-sleep wake is a cold boot, so without this every trip would replay the same
+       "random" card from the top of the sequence. */
+    tf_core_seed(tf_port_random_seed());
+
     if (tf_port_load(&s_save) && tf_port_wake_cause() == TF_WAKE_ALARM) {
         /* Nobody tapped. Flash and drop off again — but only while the frog really is
            still due, so a spurious ring cannot trap us in a blink loop. */

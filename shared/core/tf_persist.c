@@ -41,8 +41,13 @@ static bool frame_valid(const frame_t *f)
     if (f->crc != frame_crc(f))
         return false;
     const tf_save_t *g = &f->body;
+    /* trip_tier selects the card pool in tf_core_tick(): a negative tier empties the pool
+       and the reward draw then evaluates rnd() % 0, so a torn or edited frame has to be
+       rejected here rather than trusted. The rest of the blob degrades harmlessly. */
     return g->state >= TF_STATE_HOME && g->state <= TF_STATE_ANGRY
-           && g->clovers >= 0 && g->last_reward_card <= TF_NUM_CARDS;
+           && g->clovers >= 0
+           && g->trip_tier >= 0 && g->trip_tier <= 2
+           && g->last_reward_card >= -1 && g->last_reward_card < TF_NUM_CARDS;
 }
 
 size_t tf_persist_frame_size(void)

@@ -36,6 +36,10 @@ typedef struct {
 } tf_save_t;
 
 void     tf_core_init(tf_save_t *s);
+/* Seed the reward draw from `seed`. Call once at startup with tf_port_random_seed():
+   without it every board plays the identical sequence, and because a deep-sleep wake is a
+   reboot it would restart from the top on every trip. A zero seed is ignored. */
+void     tf_core_seed(uint32_t seed);
 uint32_t tf_core_tick(tf_save_t *s, int64_t now_ms);
 
 tf_err_t tf_core_send(tf_save_t *s, int64_t now_ms);

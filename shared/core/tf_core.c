@@ -19,7 +19,16 @@ static const uint8_t CARD_TIER[TF_NUM_CARDS] = {
 
 static const int ITEM_PRICES[TF_ITEM_COUNT] = { 10, 25, 20 };
 
+/* xorshift32: cheap, and plenty for shuffling a 12-card pool. The fixed initial state is
+   only a placeholder for the moment before tf_core_seed() runs. */
 static uint32_t rng_s = 0x9e3779b9u;
+
+void tf_core_seed(uint32_t seed)
+{
+    /* 0 is xorshift's one fixed point — it would return 0 forever and the frog would hand
+       out the same card on every trip. */
+    rng_s = seed ? seed : 0x9e3779b9u;
+}
 
 static uint32_t rnd(void)
 {
@@ -96,14 +105,15 @@ tf_err_t tf_core_send(tf_save_t *s, int64_t now_ms)
         return TF_ERR_NO_SANDWICH;
 
     s->items[TF_ITEM_SANDWICH]--;
+    /* Only one item can set the trip tier, so only consume the best one in the bag.
+       Taking a tent as well as a charm charged the player for an item that did nothing. */
     int tier = 0;
-    if (s->items[TF_ITEM_TENT] > 0) {
-        s->items[TF_ITEM_TENT]--;
-        tier = 1;
-    }
     if (s->items[TF_ITEM_CHARM] > 0) {
         s->items[TF_ITEM_CHARM]--;
         tier = 2;
+    } else if (s->items[TF_ITEM_TENT] > 0) {
+        s->items[TF_ITEM_TENT]--;
+        tier = 1;
     }
 
     int len = TRIP_BASE_MS;

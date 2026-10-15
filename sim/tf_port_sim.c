@@ -2,6 +2,7 @@
 #include "tf_persist.h"
 #include "lvgl.h"
 #include <stdio.h>
+#include <time.h>
 
 static const char *SLOT_FILE[TF_SAVE_SLOTS] = { "travel_frog_save.bin", "travel_frog_save.bak" };
 static tf_save_meta_t s_meta;
@@ -38,6 +39,17 @@ bool tf_port_store(const tf_save_t *s)
 {
     s_meta.saved_at_ms = tf_port_now_ms();
     return tf_persist_store(s, &s_meta, slot_write);
+}
+
+uint32_t tf_port_random_seed(void)
+{
+    /* A PC has no hardware RNG. Seconds alone would make two runs in the same second draw
+       identical cards, so fold in the LVGL tick and an ASLR'd stack address as well. */
+    uint32_t mix = 0;
+    mix ^= (uint32_t)time(NULL);
+    mix ^= (uint32_t)lv_tick_get();
+    mix ^= (uint32_t)(uintptr_t)&mix;
+    return mix;
 }
 
 /* ---------- sleep ----------
