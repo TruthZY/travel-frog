@@ -29,3 +29,8 @@ __pycache__/
 tests/*.exe
 tests/*.obj
 tests/*.pdb
+
+# 套皮（reskin）工作区：素材取自 X26_Client 的 Act111 像素库，属于商业项目的资源，
+# 计划书里也写了内部资源的绝对路径，两者都不入库。
+docs/reskin/
+docs/reskin_plan.md
