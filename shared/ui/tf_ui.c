@@ -79,9 +79,6 @@ static ui_t U;
 static int s_sleep;                     /* 0 awake, 1 fading out, 2 veiled */
 static int64_t s_last_act_ms;
 static uint32_t s_batt_sig = ~0u;       /* last painted battery look, ~0 = never painted */
-#ifdef TF_DEBUG_IDLE
-static int64_t s_boot_ms;               /* temporary M3b rig: watch the countdown on UART */
-#endif
 
 static void refresh(void);
 
@@ -407,15 +404,10 @@ static void sleep_fade_done(lv_anim_t *a)
     idle_anims_stop();
     drawing_gate(true);
     tf_port_store(U.save);   /* a deep-sleep wake is a reboot: whatever is unsaved is lost */
-    /* A trip that will end while the panel is dark gets an alarm, so the board can flash
-       the light for a player who is nowhere near it. The wake that ring never draws UI. */
-    const int64_t due = tf_core_trip_remaining_ms(U.save, tf_port_now_ms());
-    if (tf_core_state(U.save) == TF_STATE_OUT && due > 0 &&
-        tf_port_sleep_until(tf_port_wall_ms() + due))
-        return;
     tf_port_sleep();
     /* Only the simulator and the polled fallback come back here; the veil stays up and
-       wake_cb handles the tap. */
+       wake_cb handles the tap. The trip keeps running on the RTC wall clock and is settled
+       by on_tick the next time the player taps the glass. */
 }
 
 static void sleep_now(void)
@@ -484,19 +476,6 @@ static void on_tick(lv_timer_t *t)
     if (ev & TF_EV_ANGRY_END)
         tf_port_store(U.save);
     refresh();
-
-#ifdef TF_DEBUG_IDLE
-    {
-        static int last_s = -1;
-        const int s = (int)((now - s_boot_ms) / 1000);
-        if (s != last_s) {
-            last_s = s;
-            printf("idle %ds / %llds -> %s\n", s, (long long)(IDLE_MS / 1000),
-                   s_sleep ? "VEILED" : "awake");
-            fflush(stdout);
-        }
-    }
-#endif
     if (now - s_last_act_ms >= IDLE_MS) sleep_now();
 }
 
@@ -669,9 +648,6 @@ void tf_ui_create(lv_obj_t *screen, tf_save_t *save)
     lv_obj_add_event_cb(U.black, wake_cb, LV_EVENT_PRESSED, NULL);
 
     s_last_act_ms = tf_port_now_ms();
-#ifdef TF_DEBUG_IDLE
-    s_boot_ms = s_last_act_ms;
-#endif
     lv_timer_create(on_tick, 250, NULL);
     lv_timer_create(activity_cb, 30, NULL);
     refresh();

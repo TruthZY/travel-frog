@@ -64,18 +64,6 @@ void tf_port_sleep(void) { }
 /* Nothing here is ever powered down: the window has no backlight and SDL owns the audio. */
 void tf_port_wake_restore(void) { }
 
-bool tf_port_sleep_until(int64_t at_ms)
-{
-    (void)at_ms;
-    return false;   /* a PC has no alarm hardware; the caller sleeps the plain way */
-}
-
-tf_wake_t tf_port_wake_cause(void)
-{
-    /* Every simulator start is a cold boot; the veil's own tap handling covers wakes. */
-    return TF_WAKE_POWER_ON;
-}
-
 static lv_obj_t *s_flash;
 
 static void flash_done(lv_anim_t *a)

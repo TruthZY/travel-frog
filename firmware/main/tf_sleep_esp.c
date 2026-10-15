@@ -5,8 +5,9 @@
    home.
 
    A tap is the only thing that can *show* the result, which is no use to a player who is in
-   another room, so the alarm half of this file wakes the chip at the trip's end, flashes the
-   panel and goes straight back to sleep without ever drawing or settling anything.
+   another room, so the alarm half of this file wakes the chip at the trip's end, plays the
+   home call and goes straight back to sleep without ever drawing or settling anything —
+   a blink needs someone looking at the desk, a sound reaches down a corridor.
 
    From the Rev1.1 schematic: the CST816S INT is GPIO4 (BSP_LCD_TOUCH_INT) and the
    PCF85063A INT is GPIO6, both through 0R links. GPIO0-21 are RTC IOs on the S3, so both can
@@ -50,28 +51,46 @@
 #define CTRL2        0x01                    /* PCF85063A Control_2 */
 #define AF           0x40                    /* alarm flag, held until cleared */
 #define AIE          0x80                    /* alarm interrupt enable */
+#define C2_TF        0x08                    /* timer flag, the other thing that asserts INT */
+#define TMODE        0x11                    /* PCF85063A Timer_mode */
+#define ALEN_REG     0x0B                    /* the five alarm fields, second..weekday */
+#define ALEN         0x80                    /* set in a field = that field never matches */
 #define BLINK_ON_MS  90
 #define BLINK_OFF_MS 110
 
 static const char *TAG = "tf_sleep";
-static tf_wake_t s_cause = TF_WAKE_POWER_ON;
 static bool s_noted;
 
 /* ---------- the RTC, which tf_port_esp.c opened for the clock ---------- */
 
-extern bool tf_rtc_available(void);
 extern pcf85063a_dev_t *tf_rtc_handle(void);
 extern void tf_snd_quiesce(void);
 extern void tf_snd_resume(void);
 
-static void rtc_clear_alarm(void)
+/* The INT pin is open-drain and stays asserted for as long as any flag is set, so a stale
+   AF or TF holds it low forever — and ext1_arm() then reads a working wake link as a broken
+   one and drops the board to tier 1 for good. Measured on hardware: ctrl2=0xc0 (AIE|AF) held
+   GPIO6 low, and the same pad read high the instant those flags were cleared. Clearing AF
+   alone is not enough; the timer flag and the timer itself assert the same pin.
+
+   The alarm registers are masked too, and that is the half that cannot be done by clearing
+   flags: PCF85063A raises AF whenever the clock matches the alarm fields, whether or not
+   AIE is on, so an alarm left over from an old test keeps re-flagging every day at that
+   time of day, and every one of those matches pulls INT low again behind our back. Masking
+   every field leaves AF as a flag that is only ever set by something we asked for. */
+static void rtc_quiesce(void)
 {
     pcf85063a_dev_t *rtc = tf_rtc_handle();
-    uint8_t buf[2];
-    if (!rtc || pcf85063a_read_register(rtc, CTRL2, &buf[1], 1) != ESP_OK) return;
-    buf[0] = CTRL2;
-    buf[1] |= AF;          /* writing 1 clears the flag */
-    pcf85063a_write_register(rtc, buf, 2);
+    if (!rtc) return;
+    uint8_t c2 = 0;
+    if (pcf85063a_read_register(rtc, CTRL2, &c2, 1) == ESP_OK) {
+        uint8_t buf[2] = { CTRL2, (uint8_t)((c2 | AF | C2_TF) & ~AIE) };
+        pcf85063a_write_register(rtc, buf, 2);
+    }
+    uint8_t stop[2] = { TMODE, 0x00 };
+    pcf85063a_write_register(rtc, stop, 2);
+    uint8_t mask[6] = { ALEN_REG, ALEN, ALEN, ALEN, ALEN, ALEN };
+    pcf85063a_write_register(rtc, mask, sizeof mask);
 }
 
 static bool rtc_alarm_pending(void)
@@ -80,39 +99,6 @@ static bool rtc_alarm_pending(void)
     uint8_t v = 0;
     if (!rtc || pcf85063a_read_register(rtc, CTRL2, &v, 1) != ESP_OK) return false;
     return (v & AF) != 0;
-}
-
-/* One-shot: the driver's own setter leaves day and weekday masked, so the alarm can only
-   ever fire on the next matching time of day. */
-static bool rtc_arm_alarm(int64_t wall_ms)
-{
-    pcf85063a_dev_t *rtc = tf_rtc_handle();
-    if (!rtc) return false;
-    const int64_t sec = wall_ms / 1000;
-    const pcf85063a_datetime_t t = {
-        .hour = (uint8_t)((sec / 3600) % 24),
-        .min  = (uint8_t)((sec / 60) % 60),
-        .sec  = (uint8_t)(sec % 60),
-    };
-    return pcf85063a_set_alarm(rtc, t) == ESP_OK && pcf85063a_enable_alarm(rtc) == ESP_OK;
-}
-
-static bool rtc_arm_clock(void)
-{
-    pcf85063a_dev_t *rtc = tf_rtc_handle();
-    pcf85063a_datetime_t t;
-    return rtc && pcf85063a_get_time_date(rtc, &t) == ESP_OK;
-}
-
-/* Seconds from the RTC's own time-of-day to the next arrival of `want`. */
-static int64_t seconds_until(int hour, int min, int sec)
-{
-    pcf85063a_dev_t *rtc = tf_rtc_handle();
-    pcf85063a_datetime_t t;
-    if (!rtc || pcf85063a_get_time_date(rtc, &t) != ESP_OK) return -1;
-    int64_t delta = (hour * 3600 + min * 60 + sec) - (t.hour * 3600 + t.min * 60 + t.sec);
-    if (delta < 0) delta += 86400;
-    return delta;
 }
 
 /* ---------- NVS tier bookkeeping ---------- */
@@ -180,12 +166,10 @@ void tf_sleep_note_wake(void)
        wake can be told apart from a finger by reading the flag over I2C. */
     const bool rang = src == ESP_SLEEP_WAKEUP_EXT1 && rtc_alarm_pending();
 
-    s_cause = rang ? TF_WAKE_ALARM
-            : src == ESP_SLEEP_WAKEUP_EXT1 ? TF_WAKE_TOUCH : TF_WAKE_POWER_ON;
     pwr_set(K_SLEPT, 0);
 
     if (rang) {
-        rtc_clear_alarm();
+        rtc_quiesce();
     } else if (src == ESP_SLEEP_WAKEUP_EXT1) {
         /* The line idles low or chatters: ANY_LOW would reboot us forever. */
         const uint32_t fast = (delta >= 0 && delta <= FAST_WAKE_S) ? pwr_get(K_FAST, 0) + 1 : 0;
@@ -202,13 +186,9 @@ void tf_sleep_note_wake(void)
         pwr_set(K_FAST, fast);
         if (fast >= GIVE_UP) degrade_tier("short sleeps ended by a power cycle: INT cannot wake");
     }
-    ESP_LOGI(TAG, "wake cause=%d tier=%u", (int)s_cause, (unsigned)pwr_get(K_TIER, 0));
-}
-
-tf_wake_t tf_port_wake_cause(void)
-{
-    if (!s_noted) tf_sleep_note_wake();
-    return s_cause;
+    ESP_LOGI(TAG, "woke by %s, ring=%d tier=%u",
+             src == ESP_SLEEP_WAKEUP_EXT1 ? "EXT1" : "power-on",
+             (int)rang, (unsigned)pwr_get(K_TIER, 0));
 }
 
 /* ---------- light show ---------- */
@@ -224,42 +204,7 @@ void tf_port_blink(int times)
     }
 }
 
-/* A cold boot out of deep sleep gets this far before LVGL exists, so it must not fall
-   through into the normal UI: that would light the panel for a player who never asked,
-   and the whole point is a flash you can notice from the next room. */
-void tf_sleep_announce_arrival(const tf_save_t *game)
-{
-    tf_port_blink(6);
-    /* The alarm is a time-of-day match, so it can only ever fire once; re-arming it would
-       blink again tomorrow at the same clock time, for a frog that is long home. */
-    (void)game;
-    esp_deep_sleep_start();
-}
-
 /* ---------- sleep side ---------- */
-
-/* Both INT lines as RTC inputs with their pull-ups, so their levels survive deep sleep.
-   Returns false when a line cannot carry an active-low wake, which is the only thing
-   software can actually measure about them. */
-static bool ext1_arm(uint64_t mask)
-{
-    static const int pins[] = { TOUCH_INT, RTC_INT };
-    for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
-        if (!(mask & (1ULL << pins[i]))) continue;
-        if (rtc_gpio_init(pins[i]) != ESP_OK) {
-            ESP_LOGW(TAG, "GPIO%d is not usable as an RTC input", pins[i]);
-            return false;
-        }
-        ESP_ERROR_CHECK(rtc_gpio_set_direction(pins[i], RTC_GPIO_MODE_INPUT_ONLY));
-        ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(pins[i]));
-        ESP_ERROR_CHECK(rtc_gpio_pullup_en(pins[i]));
-        if (rtc_gpio_get_level(pins[i]) != 1) {
-            ESP_LOGW(TAG, "GPIO%d idles low, ANY_LOW would wake us at once", pins[i]);
-            return false;
-        }
-    }
-    return esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_LOW) == ESP_OK;
-}
 
 /* Hand the pads back to the digital GPIO mux so the drivers keep working after a sleep
    that returned instead of a reboot. */
@@ -272,6 +217,45 @@ static void ext1_disarm(uint64_t mask)
         gpio_set_direction(pins[i], GPIO_MODE_INPUT);
         gpio_pullup_en(pins[i]);
     }
+}
+
+/* Both INT lines as RTC inputs with their pull-ups, so their levels survive deep sleep.
+   Returns false when a line cannot carry an active-low wake, which is the only thing
+   software can actually measure about them.
+
+   The RTC's pad is checked first, on purpose: rtc_gpio_init() takes a pin away from the
+   digital mux, and the touch driver's wake interrupt lives on the digital side. Measuring
+   GPIO4 before GPIO6 and then bailing out on GPIO6 left GPIO4 orphaned — tier 1 was then
+   "panel dark, chip awake, taps ignored", and only the power key could bring it back. */
+static bool ext1_arm(uint64_t mask)
+{
+    static const int pins[] = { RTC_INT, TOUCH_INT };
+    for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
+        const int pin = pins[i];
+        bool broken = false;
+        if (!(mask & (1ULL << pin))) continue;
+        if (rtc_gpio_init(pin) != ESP_OK) {
+            ESP_LOGW(TAG, "GPIO%d is not usable as an RTC input", pin);
+            broken = true;
+        } else {
+            ESP_ERROR_CHECK(rtc_gpio_set_direction(pin, RTC_GPIO_MODE_INPUT_ONLY));
+            ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(pin));
+            ESP_ERROR_CHECK(rtc_gpio_pullup_en(pin));
+            if (rtc_gpio_get_level(pin) != 1) {
+                ESP_LOGW(TAG, "GPIO%d idles low, ANY_LOW would wake us at once", pin);
+                broken = true;
+            }
+        }
+        if (!broken) continue;
+        /* Only the touch pad needs handing back; if it was the RTC we never touched it. */
+        if (pin == TOUCH_INT) ext1_disarm(mask);
+        return false;
+    }
+    if (esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_LOW) != ESP_OK) {
+        ext1_disarm(mask);
+        return false;
+    }
+    return true;
 }
 
 /* Nothing may be drawn after this: on the board the chip is simply gone. */
@@ -309,24 +293,10 @@ void tf_port_wake_restore(void)
 void tf_port_sleep(void)
 {
     if (!s_noted) tf_sleep_note_wake();
-    rtc_clear_alarm();
+    /* Before sleeping, not after: a flag left over from whatever once armed the alarm holds
+       INT low, and ext1_arm() reads that as a broken wake link and drops us out of tier 0 —
+       which is exactly how this board got stuck behind a dark panel with the chip at full
+       speed. */
+    rtc_quiesce();
     to_sleep();
-}
-
-bool tf_port_sleep_until(int64_t at_ms)
-{
-    if (!s_noted) tf_sleep_note_wake();
-    if (pwr_get(K_TIER, 0) != 0 || !tf_rtc_available() || !rtc_arm_clock()) return false;
-    if (!rtc_arm_alarm(at_ms)) {
-        ESP_LOGW(TAG, "alarm at %lld ms did not take", (long long)at_ms);
-        return false;
-    }
-    /* The alarm is a time-of-day match, so it really fires this far ahead — worth logging,
-       because a wall clock that was never set makes it land somewhere arbitrary. */
-    ESP_LOGI(TAG, "sleeping until %lld ms, alarm in %lld s",
-             (long long)at_ms,
-             (long long)seconds_until((int)((at_ms / 1000 / 3600) % 24),
-                                      (int)((at_ms / 1000 / 60) % 60), (int)((at_ms / 1000) % 60)));
-    to_sleep();
-    return true;   /* only reached when the deep sleep refused */
 }

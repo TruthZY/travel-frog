@@ -36,7 +36,3 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE TF_HAS_ASSETS)
 # Sound effects go to the 2MB "storage" partition (mounted at /spiffs by the BSP),
 # so the app image stays free of audio and idf.py flash writes them in one go.
 spiffs_create_partition_image(storage ../../assets/audio FLASH_IN_PROJECT)
-
-# Temporary M3b bring-up rig: prints the idle countdown so the sleep path can be
-# watched over UART without touching the board. Remove with the debug block in tf_ui.c.
-target_compile_definitions(${COMPONENT_LIB} PRIVATE TF_DEBUG_IDLE)

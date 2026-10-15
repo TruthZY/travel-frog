@@ -70,14 +70,7 @@ static int64_t rtc_read_ms(void)
            + (t.hour * 3600 + t.min * 60 + t.sec) * 1000LL;
 }
 
-/* The sleep driver needs the handle to arm the RTC alarm, and clock_init() is the only
-   place that opens it. */
-bool tf_rtc_available(void)
-{
-    clock_init();
-    return s_rtc_ready;
-}
-
+/* clock_init() is the only place that opens the RTC, so the sleep driver asks here. */
 pcf85063a_dev_t *tf_rtc_handle(void)
 {
     clock_init();
