@@ -33,6 +33,12 @@
 #define BAR_W 176                   /* widest pill that still fits the circle at y=25 */
 #define DOCK_SZ 56
 
+/* Idle time before the panel goes dark. Being away is the long wait of this game, so
+   it blanks sooner than the garden view the player might still be looking at. */
+#define IDLE_MS_HOME 60000
+#define IDLE_MS_OUT  20000
+#define SLEEP_FADE_MS 400
+
 enum { DOCK_SHOP = 0, DOCK_GO, DOCK_CARD, DOCK_SPD, DOCK_NUM };
 
 static const lv_point_t CLOVER_XY[TF_NUM_CLOVER] = {{46,150},{280,150},{22,206},{303,206}};
@@ -61,9 +67,15 @@ typedef struct {
     lv_obj_t *modal_dim;
     lv_obj_t *modal_title;
     lv_obj_t *modal_body;
+    lv_obj_t *black;
 } ui_t;
 
 static ui_t U;
+static int s_sleep;                     /* 0 awake, 1 fading out, 2 veiled */
+static int64_t s_last_act_ms;
+#ifdef TF_DEBUG_IDLE
+static int64_t s_boot_ms;               /* temporary M3b rig: watch the countdown on UART */
+#endif
 
 static void refresh(void);
 
@@ -318,15 +330,78 @@ static void spd_cb(lv_event_t *e)
     refresh();
 }
 
+/* ---------- sleep ---------- */
+
+/* Sampling the devices at the same rate LVGL reads them means a tap too short for the
+   indev to notice also doesn't count as activity — which is the behaviour we want. */
+static void activity_cb(lv_timer_t *t)
+{
+    (void)t;
+    lv_indev_t *indev = lv_indev_get_next(NULL);
+    while (indev) {
+        if (lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED) {
+            s_last_act_ms = tf_port_now_ms();
+            return;
+        }
+        indev = lv_indev_get_next(indev);
+    }
+}
+
+static void sleep_fade_done(lv_anim_t *a)
+{
+    (void)a;
+    s_sleep = 2;
+    tf_port_store(U.save);   /* a deep-sleep wake is a reboot: whatever is unsaved is lost */
+    tf_port_sleep();
+    /* Only the simulator and the polled fallback come back here; the veil stays up and
+       wake_cb handles the tap. */
+}
+
+static void sleep_now(void)
+{
+    lv_obj_t *old;
+    s_sleep = 1;
+    while ((old = lv_obj_get_child(U.modal_body, 0)) != NULL)
+        lv_obj_delete(old);
+    lv_obj_add_flag(U.modal_dim, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(U.bubble, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_clear_flag(U.black, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_opa(U.black, LV_OPA_TRANSP, 0);
+    lv_obj_update_layout(U.black);
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, U.black);
+    lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+    lv_anim_set_exec_cb(&a, set_bg_opa);
+    lv_anim_set_duration(&a, SLEEP_FADE_MS);
+    lv_anim_set_completed_cb(&a, sleep_fade_done);
+    lv_anim_start(&a);
+}
+
+static void wake_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_sleep) return;
+    s_sleep = 0;
+    lv_anim_delete(U.black, set_bg_opa);   /* a tap during the fade cancels the sleep */
+    s_last_act_ms = tf_port_now_ms();
+    lv_obj_add_flag(U.black, LV_OBJ_FLAG_HIDDEN);
+    refresh();   /* on_tick then settles the trip and blinks if the frog came home */
+}
+
 /* ---------- tick ---------- */
 
 static void on_tick(lv_timer_t *t)
 {
     (void)t;
+    if (s_sleep) return;               /* nothing behind the veil is worth drawing */
     int64_t now = tf_port_now_ms();
     uint32_t ev = tf_core_tick(U.save, now);
     if (ev & TF_EV_TRIP_RETURN) {
         char buf[128];
+        tf_port_blink(3);               /* the player may be across the room */
         tf_port_sfx(TF_SFX_REWARD);
         if (U.save->last_reward_card >= 0 && U.save->last_reward_clovers > 0)
             snprintf(buf, sizeof buf, "回来啦！明信片「%s」+%d 三叶草",
@@ -341,6 +416,21 @@ static void on_tick(lv_timer_t *t)
     if (ev & TF_EV_ANGRY_END)
         tf_port_store(U.save);
     refresh();
+
+    const int64_t idle = tf_core_state(U.save) == TF_STATE_OUT ? IDLE_MS_OUT : IDLE_MS_HOME;
+#ifdef TF_DEBUG_IDLE
+    {
+        static int last_s = -1;
+        const int s = (int)((now - s_boot_ms) / 1000);
+        if (s != last_s) {
+            last_s = s;
+            printf("idle %ds / %llds -> %s\n", s, (long long)(idle / 1000),
+                   s_sleep ? "VEILED" : "awake");
+            fflush(stdout);
+        }
+    }
+#endif
+    if (now - s_last_act_ms >= idle) sleep_now();
 }
 
 /* ---------- layout ---------- */
@@ -491,7 +581,20 @@ void tf_ui_create(lv_obj_t *screen, tf_save_t *save)
 
     mk_text_btn(panel, "关闭", modal_close_cb, NULL, COL_GREY, COL_GREY_P);
 
+    /* Sleep veil. It is the topmost object and the only clickable one while dark, so the
+       tap that wakes the board is consumed by the wake itself, not by a button. */
+    U.black = mk_base(scr, UI_D, UI_D, 0x000000, 0);
+    lv_obj_center(U.black);
+    lv_obj_add_flag(U.black, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(U.black, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(U.black, wake_cb, LV_EVENT_PRESSED, NULL);
+
+    s_last_act_ms = tf_port_now_ms();
+#ifdef TF_DEBUG_IDLE
+    s_boot_ms = s_last_act_ms;
+#endif
     lv_timer_create(on_tick, 250, NULL);
+    lv_timer_create(activity_cb, 30, NULL);
     refresh();
 }
 

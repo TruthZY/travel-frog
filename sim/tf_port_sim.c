@@ -1,5 +1,6 @@
 #include "tf_port.h"
 #include "tf_persist.h"
+#include "lvgl.h"
 #include <stdio.h>
 
 static const char *SLOT_FILE[TF_SAVE_SLOTS] = { "travel_frog_save.bin", "travel_frog_save.bak" };
@@ -37,4 +38,58 @@ bool tf_port_store(const tf_save_t *s)
 {
     s_meta.saved_at_ms = tf_port_now_ms();
     return tf_persist_store(s, &s_meta, slot_write);
+}
+
+/* ---------- sleep ----------
+   A PC cannot switch itself off, so the simulator sleeps the way the polled firmware
+   fallback does: tf_port_sleep() returns at once and tf_ui keeps a black veil over the
+   window until the next tap. That is exactly the state machine the board runs through,
+   which is why the sleep path is testable here. The process does keep drawing, so use
+   the x300 speed button to fast-forward a trip while the veil is up. */
+
+void tf_port_sleep(void) { }
+
+tf_wake_t tf_port_wake_cause(void)
+{
+    /* Every simulator start is a cold boot; the veil's own tap handling covers wakes. */
+    return TF_WAKE_POWER_ON;
+}
+
+static lv_obj_t *s_flash;
+
+static void flash_done(lv_anim_t *a)
+{
+    (void)a;
+    if (s_flash) { lv_obj_delete(s_flash); s_flash = NULL; }
+}
+
+/* lv_anim exec callbacks take void */
+static void set_flash_opa(void *o, int32_t v) { lv_obj_set_style_bg_opa((lv_obj_t *)o, (lv_opa_t)v, 0); }
+
+void tf_port_blink(int times)
+{
+    if (times < 1) return;
+    /* On the board this pulses the backlight; here the panel is the whole window, so a
+       white veil on top of everything is the closest thing to "the screen flashed". */
+    if (s_flash) { lv_obj_delete(s_flash); s_flash = NULL; }
+
+    s_flash = lv_obj_create(lv_screen_active());
+    lv_obj_remove_style_all(s_flash);
+    lv_obj_set_size(s_flash, 360, 360);
+    lv_obj_set_style_bg_color(s_flash, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(s_flash, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(s_flash, LV_RADIUS_CIRCLE, 0);
+    lv_obj_remove_flag(s_flash, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_center(s_flash);
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_flash);
+    lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_80);
+    lv_anim_set_exec_cb(&a, set_flash_opa);
+    lv_anim_set_duration(&a, 110);
+    lv_anim_set_playback_duration(&a, 160);
+    lv_anim_set_repeat_count(&a, times);
+    lv_anim_set_completed_cb(&a, flash_done);
+    lv_anim_start(&a);
 }
