@@ -16,7 +16,9 @@
    Those INT links cannot be proven from software, so behaviour decides. Two tiers:
    0 = deep sleep woken by the touch pin, 1 = panel dark but the chip keeps polling touch
    over I2C. Tier 0 costs the battery nothing and tier 1 costs nothing but battery, so the
-   degradation is safe in both directions. The alarm reminder only exists in tier 0. */
+   degradation is safe in both directions — and it has to be reversible, because tier 1
+   can never gather the evidence that would vindicate tier 0. It re-probes on a countdown
+   instead of latching; see degrade_tier(). The alarm reminder only exists in tier 0. */
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -39,10 +41,12 @@
 #define K_TIER       "tier"    /* u32: 0 = deep sleep on INT, 1 = dark panel, chip awake */
 #define K_FAST       "fast"    /* u32: EXT1 wakes that landed right after falling asleep */
 #define K_SLEPT      "slept"   /* u32: game clock in seconds when we went to sleep, 0 = awake */
+#define K_RETRY      "retry"   /* u32: sleeps left before a degraded tier re-probes tier 0 */
 
 #define FAST_WAKE_S  2                       /* an EXT1 wake this soon after sleeping is bogus */
 #define POKED_S      (5 * 60)                /* a power cycle that cut a short sleep: they poked it */
 #define GIVE_UP      3
+#define TIER_PROBE_SLEEPS  20                /* how long a degraded tier is believed for */
 #define CTRL2        0x01                    /* PCF85063A Control_2 */
 #define AF           0x40                    /* alarm flag, held until cleared */
 #define AIE          0x80                    /* alarm interrupt enable */
@@ -129,11 +133,36 @@ static void pwr_set(const char *key, uint32_t v)
     nvs_close(h);
 }
 
-static void give_up_deep_sleep(const char *why)
+/* Degrading is a hypothesis about the INT lines, not a verdict, and it cannot be confirmed
+   from inside tier 1: the chip never deep sleeps there, so it never gets the EXT1 wake that
+   would prove tier 0 works. Meanwhile a wet finger, an ESD kick on the 0R link or a single
+   failed I2C read in rtc_alarm_pending() all look exactly like a broken INT — so a degraded
+   tier counts sleeps down and then tries deep sleep again rather than staying hot forever. */
+static void degrade_tier(const char *why)
 {
     pwr_set(K_TIER, 1);
     pwr_set(K_FAST, 0);
-    ESP_LOGW(TAG, "%s -> dark panel, chip stays awake", why);
+    pwr_set(K_RETRY, TIER_PROBE_SLEEPS);
+    ESP_LOGW(TAG, "%s -> dark panel, chip stays awake (re-probing in %d sleeps)",
+             why, TIER_PROBE_SLEEPS);
+}
+
+/* Called on the way into every sleep, so a board that only sleeps once a day still gets
+   its re-probe. A missing K_RETRY means an older build degraded us: arm it on sight. */
+static void tier_count_down(void)
+{
+    if (pwr_get(K_TIER, 0) != 1) return;
+    uint32_t left = pwr_get(K_RETRY, 0);
+    if (left == 0) left = TIER_PROBE_SLEEPS;
+    if (--left) {
+        pwr_set(K_RETRY, left);
+        return;
+    }
+    pwr_set(K_RETRY, 0);
+    pwr_set(K_TIER, 0);
+    pwr_set(K_FAST, 0);
+    ESP_LOGI(TAG, "tier 1 got nothing conclusive for %d sleeps, re-probing deep sleep",
+             TIER_PROBE_SLEEPS);
 }
 
 /* ---------- wake side ---------- */
@@ -159,14 +188,17 @@ void tf_sleep_note_wake(void)
         /* The line idles low or chatters: ANY_LOW would reboot us forever. */
         const uint32_t fast = (delta >= 0 && delta <= FAST_WAKE_S) ? pwr_get(K_FAST, 0) + 1 : 0;
         pwr_set(K_FAST, fast);
-        if (fast >= GIVE_UP) give_up_deep_sleep("EXT1 wakes the instant we sleep");
+        if (fast >= GIVE_UP) degrade_tier("EXT1 wakes the instant we sleep");
     } else {
         /* Woken by the PWR key or a replug *out of a sleep that had barely started*: most
            likely the player tapped a dark panel, got nothing and reached for the button.
-           A negative delta means the wall clock restarted, so no conclusion. */
-        const uint32_t fast = (delta >= 0 && delta < POKED_S) ? pwr_get(K_FAST, 0) + 1 : 0;
+           A negative delta means the wall clock restarted, so no conclusion.
+           Only tier 0 can supply that evidence — in tier 1 the chip never slept, so a power
+           cycle is just a power cycle and counting it would push the re-probe out forever. */
+        const uint32_t fast = (pwr_get(K_TIER, 0) == 0 && delta >= 0 && delta < POKED_S)
+                              ? pwr_get(K_FAST, 0) + 1 : 0;
         pwr_set(K_FAST, fast);
-        if (fast >= GIVE_UP) give_up_deep_sleep("short sleeps ended by a power cycle: INT cannot wake");
+        if (fast >= GIVE_UP) degrade_tier("short sleeps ended by a power cycle: INT cannot wake");
     }
     ESP_LOGI(TAG, "wake cause=%d tier=%u", (int)s_cause, (unsigned)pwr_get(K_TIER, 0));
 }
@@ -247,13 +279,15 @@ static void to_sleep(void)
     /* The veil already covers the UI; killing the lamp is what the player actually sees. */
     bsp_display_backlight_off();
 
+    tier_count_down();
+
     if (pwr_get(K_TIER, 0) == 0 && ext1_arm(WAKE_MASK)) {
         esp_deep_sleep_start();
         ESP_LOGE(TAG, "deep sleep did not take");
         ext1_disarm(WAKE_MASK);
         return;
     }
-    if (pwr_get(K_TIER, 0) == 0) pwr_set(K_TIER, 1);
+    if (pwr_get(K_TIER, 0) == 0) degrade_tier("GPIO cannot carry an EXT1 wake");
     /* Tier 1: nothing to do. on_tick stays parked behind the veil and the indev keeps
        reading over I2C, so wake_cb fires on the next tap. */
 }
