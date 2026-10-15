@@ -127,6 +127,19 @@ static void set_hidden(lv_obj_t *o, bool hidden)
     else        lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
 }
 
+/* lv_label_set_text() frees and reallocates the string and invalidates unconditionally, even
+   when nothing changed. refresh() runs every 250 ms and while the frog is home all three of
+   its labels are constant, so this saves ~12 pointless realloc/invalidate pairs a second.
+   Measured on the simulator it does not move inv/s or flush/s at all — the two breathing
+   animations dominate — so the point is the heap churn, not the frame rate. Only the periodic
+   path needs it; event-driven labels set directly. */
+static void set_text_if_changed(lv_obj_t *lbl, const char *txt)
+{
+    if (!lbl) return;
+    if (strcmp(lv_label_get_text(lbl), txt) == 0) return;
+    lv_label_set_text(lbl, txt);
+}
+
 #ifdef TF_HAS_ASSETS
 static lv_obj_t *mk_asset_img(lv_obj_t *parent, int which)
 {
@@ -699,23 +712,23 @@ static void refresh(void)
 
     refresh_battery();
     snprintf(buf, sizeof buf, "三叶草 %d", (int)U.save->clovers);
-    lv_label_set_text(U.clover_lbl, buf);
+    set_text_if_changed(U.clover_lbl, buf);
 
     switch (st) {
     case TF_STATE_HOME:
-        lv_label_set_text(U.trip_lbl, "在家");
-        lv_label_set_text(U.dock_lbl[DOCK_GO], "出发");
+        set_text_if_changed(U.trip_lbl, "在家");
+        set_text_if_changed(U.dock_lbl[DOCK_GO], "出发");
         break;
     case TF_STATE_OUT: {
         int64_t left = tf_core_trip_remaining_ms(U.save, now);
         snprintf(buf, sizeof buf, "旅行 %d:%02d", (int)(left / 60000), (int)(left / 1000 % 60));
-        lv_label_set_text(U.trip_lbl, buf);
-        lv_label_set_text(U.dock_lbl[DOCK_GO], "召回");
+        set_text_if_changed(U.trip_lbl, buf);
+        set_text_if_changed(U.dock_lbl[DOCK_GO], "召回");
         break;
     }
     case TF_STATE_ANGRY:
-        lv_label_set_text(U.trip_lbl, "生气中");
-        lv_label_set_text(U.dock_lbl[DOCK_GO], "哄它");
+        set_text_if_changed(U.trip_lbl, "生气中");
+        set_text_if_changed(U.dock_lbl[DOCK_GO], "哄它");
         break;
     }
 
