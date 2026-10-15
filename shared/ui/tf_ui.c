@@ -338,6 +338,40 @@ static void spd_cb(lv_event_t *e)
 
 /* ---------- sleep ---------- */
 
+/* The two breathing loops are the only things that keep asking for a redraw while the
+   player is away, so sleep stops them and wake restarts them. */
+static void idle_anims_start(void)
+{
+    anim_start(U.frog_box, set_translate_y, 0, 4, 900, LV_ANIM_REPEAT_INFINITE,
+               lv_anim_path_ease_in_out);
+    for (int i = 0; i < TF_NUM_CLOVER; i++)
+        anim_start(U.clover_btn[i], set_bg_opa, LV_OPA_20, LV_OPA_80, 650,
+                   LV_ANIM_REPEAT_INFINITE, lv_anim_path_ease_in_out);
+}
+
+static void idle_anims_stop(void)
+{
+    lv_anim_delete(U.frog_box, set_translate_y);
+    for (int i = 0; i < TF_NUM_CLOVER; i++)
+        lv_anim_delete(U.clover_btn[i], set_bg_opa);
+}
+
+/* The veil is opaque and covers the whole panel, but LVGL 9.3 has no occlusion culling
+   (lv_obj_area_is_visible() only tests HIDDEN), so animations underneath it would keep
+   pushing full frames to a panel nobody can see — which is what makes the polled sleep
+   fallback run hot. Killing invalidation stops it at the source. Touch keeps working:
+   the indev hit-tests the object tree by coordinates, never the framebuffer. */
+static void drawing_gate(bool closed)
+{
+    lv_display_t *d = lv_obj_get_display(U.black);
+    if (!d) return;
+    lv_display_enable_invalidation(d, !closed);
+    lv_timer_t *refr = lv_display_get_refr_timer(d);
+    if (!refr) return;
+    if (closed) lv_timer_pause(refr);
+    else        lv_timer_resume(refr);
+}
+
 /* Sampling the devices at the same rate LVGL reads them means a tap too short for the
    indev to notice also doesn't count as activity — which is the behaviour we want. */
 static void activity_cb(lv_timer_t *t)
@@ -357,6 +391,8 @@ static void sleep_fade_done(lv_anim_t *a)
 {
     (void)a;
     s_sleep = 2;
+    idle_anims_stop();
+    drawing_gate(true);
     tf_port_store(U.save);   /* a deep-sleep wake is a reboot: whatever is unsaved is lost */
     /* A trip that will end while the panel is dark gets an alarm, so the board can flash
        the light for a player who is nowhere near it. The wake that ring never draws UI. */
@@ -396,8 +432,14 @@ static void wake_cb(lv_event_t *e)
 {
     (void)e;
     if (!s_sleep) return;
+    const bool was_veiled = (s_sleep == 2);   /* a tap during the fade never gated anything */
     s_sleep = 0;
     lv_anim_delete(U.black, set_bg_opa);   /* a tap during the fade cancels the sleep */
+    if (was_veiled) {
+        drawing_gate(false);
+        idle_anims_start();
+        lv_obj_invalidate(lv_screen_active());
+    }
     s_last_act_ms = tf_port_now_ms();
     lv_obj_add_flag(U.black, LV_OBJ_FLAG_HIDDEN);
     refresh();   /* on_tick then settles the trip and blinks if the frog came home */
@@ -504,8 +546,6 @@ void tf_ui_create(lv_obj_t *screen, tf_save_t *save)
     U.frog_img[0] = mk_base(U.frog_box, 70, 70, COL_FROG, LV_RADIUS_CIRCLE);
     lv_obj_align(U.frog_img[0], LV_ALIGN_CENTER, 0, 8);
 #endif
-    anim_start(U.frog_box, set_translate_y, 0, 4, 900, LV_ANIM_REPEAT_INFINITE,
-               lv_anim_path_ease_in_out);
 
     /* clovers: a pulsing light disc makes them readable on the grass */
     for (int i = 0; i < TF_NUM_CLOVER; i++) {
@@ -524,9 +564,8 @@ void tf_ui_create(lv_obj_t *screen, tf_save_t *save)
         lv_obj_add_event_cb(c, clover_cb, LV_EVENT_CLICKED, LV_INT_TO_PTR(i));
         lv_obj_set_pos(c, CLOVER_XY[i].x, CLOVER_XY[i].y);
         U.clover_vis[i] = true;   /* created visible, so refresh() only has to hide changes */
-        anim_start(c, set_bg_opa, LV_OPA_20, LV_OPA_80, 650, LV_ANIM_REPEAT_INFINITE,
-                   lv_anim_path_ease_in_out);
     }
+    idle_anims_start();
 
     /* status bar: one pill, narrow enough to stay inside the round panel */
     lv_obj_t *bar = mk_card(scr, BAR_W, 30, LV_RADIUS_CIRCLE);

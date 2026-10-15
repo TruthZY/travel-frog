@@ -44,8 +44,8 @@ bool tf_port_store(const tf_save_t *s)
    A PC cannot switch itself off, so the simulator sleeps the way the polled firmware
    fallback does: tf_port_sleep() returns at once and tf_ui keeps a black veil over the
    window until the next tap. That is exactly the state machine the board runs through,
-   which is why the sleep path is testable here. The process does keep drawing, so use
-   the x300 speed button to fast-forward a trip while the veil is up. */
+   which is why the sleep path is testable here. The veil also stops tf_ui from drawing
+   at all, so use the x300 speed button to fast-forward a trip while it is up. */
 
 void tf_port_sleep(void) { }
 
