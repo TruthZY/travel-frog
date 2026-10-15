@@ -109,8 +109,12 @@ static void batt_task(void *arg)
 bool tf_port_battery(tf_batt_t *out)
 {
     if (!s_task_up) {
-        s_task_up = true;
-        if (xTaskCreate(batt_task, "tf_batt", 4096, NULL, 1, NULL) != pdPASS)
+        /* Latch only on success. Otherwise one failed creation — low heap during the
+           display bring-up, say — leaves the gauge permanently unreadable with no retry,
+           and the UI shows no battery for the rest of the session. */
+        if (xTaskCreate(batt_task, "tf_batt", 4096, NULL, 1, NULL) == pdPASS)
+            s_task_up = true;
+        else
             ESP_LOGE(TAG, "poll task not created");
     }
     const uint32_t s = s_snap;
