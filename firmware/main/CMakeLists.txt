@@ -2,9 +2,11 @@ idf_component_register(
     SRCS
         app_main.c
         tf_port_esp.c
+        tf_snd_esp.c
         tf_assets_gen.c
         ../../shared/core/tf_core.c
         ../../shared/core/tf_persist.c
+        ../../shared/core/tf_sfx.c
         ../../shared/ui/tf_ui.c
         ../../shared/ui/tf_font_cn_16.c
         ../../shared/ui/tf_font_cn_20.c
@@ -25,3 +27,7 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE LV_LVGL_H_INCLUDE_SIMPLE)
 
 # Pre-decoded pixel art from tools/gen_fw_assets.py instead of runtime PNG decoding.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE TF_HAS_ASSETS)
+
+# Sound effects go to the 2MB "storage" partition (mounted at /spiffs by the BSP),
+# so the app image stays free of audio and idf.py flash writes them in one go.
+spiffs_create_partition_image(storage ../../assets/audio FLASH_IN_PROJECT)

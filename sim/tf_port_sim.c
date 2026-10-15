@@ -38,8 +38,3 @@ bool tf_port_store(const tf_save_t *s)
     s_meta.saved_at_ms = tf_port_now_ms();
     return tf_persist_store(s, &s_meta, slot_write);
 }
-
-void tf_port_sfx(int id)
-{
-    printf("[sfx] id=%d\n", id);
-}

@@ -31,9 +31,11 @@ add_executable(travel_frog_sim
     main.c
     tf_port_sim.c
     tf_assets_sim.c
+    tf_snd_sdl.c
     sim_clock.c
     ../shared/core/tf_core.c
     ../shared/core/tf_persist.c
+    ../shared/core/tf_sfx.c
     ../shared/ui/tf_ui.c
     ../shared/ui/tf_font_cn_16.c
     ../shared/ui/tf_font_cn_20.c
@@ -47,7 +49,8 @@ target_include_directories(travel_frog_sim PRIVATE
 target_link_directories(travel_frog_sim PRIVATE ${sdl2_SOURCE_DIR}/lib/x64)
 target_link_libraries(travel_frog_sim PRIVATE lvgl SDL2 SDL2main)
 target_compile_definitions(travel_frog_sim PRIVATE TF_HAS_ASSETS
-    "TF_ASSET_DIR=\"E:/HardWork/travel-frog/assets/ui/\"")
+    "TF_ASSET_DIR=\"E:/HardWork/travel-frog/assets/ui/\""
+    "TF_AUDIO_DIR=\"E:/HardWork/travel-frog/assets/audio/\"")
 if(MSVC)
     target_compile_options(travel_frog_sim PRIVATE /utf-8)
 endif()

@@ -18,6 +18,7 @@ void app_main(void)
     lv_display_t *disp = bsp_display_start();
     ESP_ERROR_CHECK(disp == NULL ? ESP_FAIL : ESP_OK);
     bsp_display_backlight_on();
+    tf_port_audio_init();
 
     if (!tf_port_load(&s_save)) {
         tf_core_init(&s_save);

@@ -126,12 +126,6 @@ void tf_port_clock_floor(int64_t ms)
 void tf_port_speed_cycle(void) { /* real time on device */ }
 int  tf_port_speed(void) { return 1; }
 
-void tf_port_sfx(int id)
-{
-    /* M5: route to ES8311 via bsp_extra Audio_Play_* */
-    ESP_LOGD(TAG, "sfx %d", id);
-}
-
 /* ---------- storage ---------- */
 
 static bool slot_read(int slot, void *buf, size_t buf_sz, size_t *out_len)

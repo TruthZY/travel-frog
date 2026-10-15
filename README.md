@@ -8,9 +8,10 @@
 shared/          平台无关代码（两个目标共用）
   core/          游戏逻辑：状态机、经济、奖励 + 存档帧（tf_persist）
   ui/            LVGL 9 圆形 UI（同心环布局）、素材表接口 tf_assets.h
-sim/             PC 模拟器（SDL2 + LVGL，MSVC/CMake）
+sim/             PC 模拟器（SDL2 + LVGL，MSVC/CMake；音频走 SDL_QueueAudio）
 firmware/        ESP-IDF v5.5 固件（Waveshare BSP）
 assets/          美术资源（AI 生成像素风，洋红底待抠图）
+  audio/         音效（tools/gen_sfx.py 合成，22050Hz/mono/16bit，烧进 storage 分区）
 ```
 
 ## PC 模拟器
@@ -152,8 +153,36 @@ M2b 中文与 UI 美化（已完成：字体子集、圆屏安全区、气泡/�
 M2c 固件素材打包（已完成：预解码 C 数组，实机烧录验证）
 M3 RTC 离线行程结算（已完成：RTC 时钟基准 + 断电安全存档；剩余：休眠省电）
 M4 明信片图片奖励
-M5 音效（ES8311 + bsp_extra，MP3 资源）
+M5 音效（已完成：ES8311 直推 PCM + SPIFFS 原创音效；剩余：背景音乐需要混音）
 M6 WiFi（NTP/云存档）与 AI 语音（esp-sr 唤醒词）
+
+## 音效
+
+**格式必须是 22050 Hz / 单声道 / 16-bit**：BSP 把 I2S 写死成
+`BSP_I2S_DUPLEX_MONO_CFG(22050)`（16bit、MONO 槽位），所以采样率/声道/位深都不用转换，
+`esp_codec_dev_write` 直接把 PCM 推进 I2S 就行。全部素材由
+`python tools/gen_sfx.py` 用振子合成，5 个音一共 56KB，不涉及任何第三方音频版权。
+
+```bash
+python tools/gen_sfx.py           # -> assets/audio/{click,harvest,croak,sad,reward}.wav
+```
+
+调用点只有一个：`tf_port_sfx(TF_SFX_xxx)`（`shared/core/tf_port.h`），枚举到文件名的表在
+`shared/core/tf_sfx.c`，两个后端各实现一次：
+
+- 模拟器 `sim/tf_snd_sdl.c`：`SDL_OpenAudioDevice` + `SDL_LoadWAV` + `SDL_QueueAudio`，
+  所以**烧录前就能在 PC 上试听**；音量 `SDL_SetAudioDeviceGain`。
+- 固件 `firmware/main/tf_snd_esp.c`：`bsp_spiffs_mount()` 挂 `/spiffs`，独立任务
+  （优先级 5）解析 RIFF 分块找 `data`，每次读 2KB 进**内部 DMA RAM** 再写 codec——
+  读 SPIFFS 本身就是一次 flash 操作、期间 cache 是关的，缓冲放 PSRAM 会出事。
+  `tf_port_sfx` 只往队列里塞 id，绝不阻塞 LVGL 任务；SPIFFS 挂载失败只打日志、不拦住开机。
+
+音效文件通过 `spiffs_create_partition_image(storage ../../assets/audio FLASH_IN_PROJECT)`
+打进 `storage` 分区（0x620000，2MB），`idf.py flash` 一起写。
+
+没走 `bsp_extra` 的 `Audio_Play_Music()`：那条是 GMF/`esp_audio_simple_player`，按路径播 MP3，
+把 codec 开成 16kHz/双声道/32bit，还要 SD 卡。以后如果要做背景音乐（MP3 循环）再引入它，
+并加一个能同时混两路的方案。
 
 ## 素材说明
 

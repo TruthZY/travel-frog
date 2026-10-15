@@ -13,6 +13,7 @@ int main(void)
     if (!disp) return 1;
     lv_sdl_mouse_create();
     tf_port_sim_init();
+    tf_port_audio_init();
 
     static tf_save_t save;
     if (!tf_port_load(&save)) {

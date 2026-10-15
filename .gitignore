@@ -12,9 +12,9 @@ firmware/managed_components/
 # 字体生成工具的依赖：cd tools && npm install
 tools/node_modules/
 
-# 模拟器运行期存档
+# 模拟器运行期存档（两个轮换槽位）
 travel_frog_save.bin
-travel_frog_save.bin.bak
+travel_frog_save.bak
 
 # 截图脚本的输出
 tools/shots/
