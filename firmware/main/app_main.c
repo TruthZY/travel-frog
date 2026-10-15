@@ -33,12 +33,22 @@ void app_main(void)
        "random" card from the top of the sequence. */
     tf_core_seed(tf_port_random_seed());
 
-    if (tf_port_load(&s_save) && tf_port_wake_cause() == TF_WAKE_ALARM) {
+    /* Load once. Both the alarm path and the fresh-install path below want the save, and
+       a second tf_port_load() is another two NVS reads for nothing. */
+    const bool have_save = tf_port_load(&s_save);
+
+    if (have_save && tf_port_wake_cause() == TF_WAKE_ALARM) {
         /* Nobody tapped. Flash and drop off again — but only while the frog really is
            still due, so a spurious ring cannot trap us in a blink loop. */
         if (tf_core_state(&s_save) == TF_STATE_OUT &&
-            tf_core_trip_remaining_ms(&s_save, tf_port_now_ms()) > 0)
+            tf_core_trip_remaining_ms(&s_save, tf_port_now_ms()) > 0) {
+            /* tf_port_blink() reaches the backlight through LEDC, and the only thing that
+               configures that channel is bsp_display_start() — which this path deliberately
+               never calls, because lighting the whole panel for a player who is not here
+               defeats the purpose. Without this the flash was silent. */
+            bsp_display_brightness_init();
             tf_sleep_announce_arrival(&s_save);
+        }
     }
 
     lv_display_t *disp = bsp_display_start();
@@ -46,7 +56,7 @@ void app_main(void)
     bsp_display_backlight_on();
     tf_port_audio_init();
 
-    if (!tf_port_load(&s_save)) {
+    if (!have_save) {
         tf_core_init(&s_save);
         tf_port_store(&s_save);
     }
