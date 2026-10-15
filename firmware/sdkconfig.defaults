@@ -13,6 +13,17 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# Turn idle time into light sleep instead of 240MHz spinning. tf_ui stops drawing while the
+# veil is up, so between LVGL ticks there is genuinely nothing to run and PM can spend that
+# gap asleep; the touch poll is timer-driven, so it keeps waking the chip on schedule.
+# PSRAM survives light sleep here — PM_SLP_SPIRAM_HALFSLEEP_ENABLED (default y) only drops
+# the refresh rate to 0.5x and exits halfsleep automatically on wake — so the LVGL heap and
+# every task resume where they left off. app_main calls esp_pm_configure() to set the
+# frequencies and turn light sleep on; sound takes a PM lock so I2S is never cut mid-write.
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+
 CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=2000000
 

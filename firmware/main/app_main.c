@@ -1,5 +1,7 @@
 #include "nvs_flash.h"
 #include "esp_err.h"
+#include "esp_log.h"
+#include "esp_pm.h"
 #include "driver/gpio.h"
 #include "bsp/esp-bsp.h"
 #include "tf_core.h"
@@ -9,7 +11,24 @@
 extern void tf_sleep_note_wake(void);
 extern void tf_sleep_announce_arrival(const tf_save_t *game);
 
+static const char *TAG = "app";
+
 static tf_save_t s_save;
+
+/* Let idle time become light sleep instead of the CPU spinning at 240 MHz; sdkconfig.defaults
+   explains why that is safe with this PSRAM setup. DFS holds the frequency at max while a
+   task is actually running, so rendering is unaffected — only the gaps between frames shrink. */
+static void power_management_init(void)
+{
+    const esp_pm_config_t pm = {
+        .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        .min_freq_mhz = CONFIG_XTAL_FREQ,
+        .light_sleep_enable = true,
+    };
+    const esp_err_t err = esp_pm_configure(&pm);
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "power management not applied: %s", esp_err_to_name(err));
+}
 
 void app_main(void)
 {
@@ -18,6 +37,8 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_erase());
         ESP_ERROR_CHECK(nvs_flash_init());
     }
+
+    power_management_init();
 
     /* Light the panel before anything slow: after a deep-sleep touch wake somebody is
        standing at the desk, and the display stack takes most of a second. */

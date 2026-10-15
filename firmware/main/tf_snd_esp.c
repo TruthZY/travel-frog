@@ -5,6 +5,7 @@
 #include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_pm.h"
 #include "bsp/esp-bsp.h"
 #include "esp_codec_dev.h"
 #include "tf_port.h"
@@ -25,6 +26,23 @@ static QueueHandle_t            s_q;
 static esp_codec_dev_handle_t   s_dev;
 static uint8_t                 *s_chunk;
 static bool                     s_quiet;   /* touched by snd_task alone, so no lock */
+static esp_pm_lock_handle_t     s_pm_cpu, s_pm_nosleep;
+
+/* Held for the length of one effect. The I2S bit clock follows the CPU/APB frequency, so
+   letting DFS downclock between two chunk writes would bend the pitch, and letting the chip
+   light-sleep there would cut the stream outright. Both are released before snd_task blocks
+   on the queue again, so the gaps between effects stay available to power management. */
+static void pm_hold(bool on)
+{
+    if (!s_pm_cpu) return;
+    if (on) {
+        esp_pm_lock_acquire(s_pm_cpu);
+        esp_pm_lock_acquire(s_pm_nosleep);
+    } else {
+        esp_pm_lock_release(s_pm_nosleep);
+        esp_pm_lock_release(s_pm_cpu);
+    }
+}
 
 /* Walk the RIFF chunks instead of trusting a 44-byte header: lv_font_conv-style
    tools and Python's wave module both insert optional chunks. */
@@ -99,12 +117,14 @@ static void snd_task(void *arg)
             continue;
         }
 
+        pm_hold(true);
         while (left) {
             size_t n = left > CHUNK_BYTES ? CHUNK_BYTES : left;
             if (fread(s_chunk, 1, n, f) != n) break;
             esp_codec_dev_write(s_dev, s_chunk, (int)n);
             left -= n;
         }
+        pm_hold(false);
         fclose(f);
     }
 }
@@ -139,6 +159,18 @@ void tf_port_audio_init(void)
         s_dev = NULL;
         return;
     }
+
+    /* Best effort: without these an effect still plays, it just may glitch if PM downclocks
+       or light-sleeps between two chunks. Not worth giving up sound over. */
+    if (esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "tf_snd", &s_pm_cpu) != ESP_OK) {
+        s_pm_cpu = NULL;
+    } else if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "tf_snd", &s_pm_nosleep) != ESP_OK) {
+        esp_pm_lock_delete(s_pm_cpu);
+        s_pm_cpu = NULL;
+    }
+    if (!s_pm_cpu)
+        ESP_LOGW(TAG, "PM locks unavailable, effects may glitch while power management is on");
+
     if (xTaskCreate(snd_task, "tf_snd", 4096, NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "audio task not created");
         codec_close();
